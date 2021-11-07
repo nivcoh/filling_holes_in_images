@@ -2,54 +2,28 @@
 import os
 import functools
 from glob import glob
-
+import pickle
+import json 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import cv2 # Import the OpenCV library
 #from memoization import cached
 
-import os
-import pickle
+from  cachingPickle import cache_handler 
 
-def cached(cachefile):
-    """
-    A function that creates a decorator which will use "cachefile" for caching the results of the decorated function "fn".
-    """
-    def decorator(fn):  # define a decorator for a function "fn"
-        def wrapped(*args, **kwargs):   # define a wrapper that will finally call "fn" with all arguments   
-            target_key = kwargs
-            target_key = frozenset(target_key.items())
-            print(target_key)   
-            # if cache exists -> load it and return its content
-            if os.path.exists(cachefile):
-                    with open(cachefile, 'rb') as cachehandle:
-                        print("using cached result from '%s'" % cachefile)
-                        cache = pickle.load(cachehandle)
-                        if target_key in cache:
-                            return(cache[target_key])
-            else:
-                cache={}
+# caching configuration
+cache_mode = False
+ch = cache_handler('defaultWeight_func_cache.pickle', cache_mode=cache_mode)
+global mycache
+mycache = ch.load_cache()# loading cache from pickle file
 
-            # execute the function with all arguments passed
-            res = fn(*args, **kwargs)
-            cache[target_key] = res
-            # write to cache file
-            with open(cachefile, 'wb') as cachehandle:
-                print("saving result to cache '%s'" % cachefile)
-                pickle.dump(cache, cachehandle)
-
-            return res
-
-        return wrapped
-
-    return decorator   # return this "customized" decorator that uses "cachefile"
 
 class img_holes(object): 
 
     # instanciate object
     def __init__(self, img=None):
-        self.img = img  
+        self.img = img        
 
     # 4 - connected
     def boundaryDetect4(self, img_mask):
@@ -114,13 +88,11 @@ class img_holes(object):
         input: JSON file full path
         output: dictionary with all configurations
         """
-        import json
-
         f = open(jsonPath)
         weight_conf = json.load(f)
         return(weight_conf)
 
-    @cached('defaultWeight_func_cache.pickle')
+    @ch.check_cache(mycache)
     def defaultWeight_func(self, v, u, **kwargs):
         """
         input:
@@ -145,6 +117,7 @@ class img_holes(object):
         weightFunc - weight function to calculate the fill value
         **kwargs - weight configuration data for the weight function
         """
+
         for u in xy_coords:
             wz_iv_list = []
             wz_list = []
@@ -159,15 +132,17 @@ class img_holes(object):
             iu = sum(wz_iv_list)/sum(wz_list)
             self.img[u[1],u[0]] = iu
 
-        return(self.img)
+        return(self.img, mycache)
 
 
 class files_handler(object):
     # instanciate object
-    def __init__(self, filepath, output_path, processed_extension='_filled'):
+    def __init__(self, filepath, output_path, mask_prefix='mask_', processed_extension='_filled'):
         self.filepath = filepath  
         self.output_path = output_path
+        self.mask_prefix = mask_prefix
         self.processed_extension = processed_extension
+        
 
     """
     input:  
@@ -175,7 +150,7 @@ class files_handler(object):
     - processed_extension - the expected extnsion for the processed files
     """
 
-    def list_files(self, path=os.getcwd(), exclude_masks='no', mask_prefix='mask_', skipDuplicates=True):
+    def list_files(self, path=os.getcwd(), exclude_masks='no', skipDuplicates=True):
         """
         get a path and list all the git/png/jpg files
         input: 
@@ -198,11 +173,13 @@ class files_handler(object):
             # if skip duplicates is True
             if skipDuplicates == True:
                 files_list = self.skipDuplicates(olist=files_list)
+                if len(files_list)==0:
+                    return(files_list, fileNames_list) # no files left to process - exit 
 
             fileNames_list=[os.path.basename(x).split('.')[0] for x in files_list]
             if exclude_masks == 'yes':
-                files_list = list(filter(lambda x: not os.path.basename(x).startswith(mask_prefix), files_list))
-                fileNames_list = list(filter(lambda x: not x.startswith(mask_prefix), fileNames_list))
+                files_list = list(filter(lambda x: not os.path.basename(x).startswith(self.mask_prefix), files_list))
+                fileNames_list = list(filter(lambda x: not x.startswith(self.mask_prefix), fileNames_list))
 
             return(files_list, fileNames_list)
 
@@ -248,13 +225,13 @@ class files_handler(object):
         - mask image as openCV object
         """
 
-        org_path, org_fileName = self.list_files(path=org_filepath) # get the original image file name 
+        org_path, org_fileName = self.list_files(path=org_filepath, skipDuplicates=False) # get the original image file name 
         mask_fileName = 'mask_'+ org_fileName.split('.')[0] # remove extension from file name and modify for mask version
         
         # when maskPath provided:
         if maskPath != None: 
             if os.path.isdir(maskPath) == True:
-                files_paths, namesList = self.list_files(path=maskPath) # list files on the mask path 
+                files_paths, namesList = self.list_files(path=maskPath, skipDuplicates=False) # list files on the mask path 
                 x = namesList.index(mask_fileName)
                 maskFile = files_paths[x]
                 mask = cv2.imread(maskFile, 0) # loading as grayscale image
@@ -268,7 +245,7 @@ class files_handler(object):
 
         # when all masks files are stored together with original images     
         else: 
-            files_paths, namesList = self.list_files(os.path.dirname(org_filepath))
+            files_paths, namesList = self.list_files(os.path.dirname(org_filepath), skipDuplicates=False)
             x = namesList.index(mask_fileName)
             maskFile = files_paths[x]
             mask = cv2.imread(maskFile, 0) # loading as grayscale image
